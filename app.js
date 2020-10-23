@@ -59,7 +59,7 @@ const searchIncomingCallInfoInCdr = (uniqueid) => {
                 let did = appConfig.sipTrunkNumber[result[0].did];
                 let direction = "Incoming";
                 let callStatus = appConfig.crmIncomingStatus[result[0].disposition];
-                telegram.sendInfoToTelegram(incomingNumber,did,dstchannel,direction,callStatus,calldate,billsec,"http://195.2.84.33/rec/monitor/" + recordPath + recordFile)
+                telegram.sendInfoToTelegram(incomingNumber,did,dstchannel,direction,callStatus,calldate,billsec,"http://185.69.154.243:8888/rec/monitor/" + recordPath + recordFile)
         } else {
             logger.debug(`Результат ${util.inspect(result)}`);
             logger.debug(`Не нашлась запись в базе по ID ${uniqueid}`);
@@ -80,7 +80,7 @@ const searchOutgoingCallInfoInCdr = (uniqueid) => {
             let calledNumber = result[0].dst;
             let direction = "Outgoing";
             let callStatus = appConfig.crmIncomingStatus[result[0].disposition];
-            telegram.sendInfoToTelegram(outgoingNumber,calledNumber,outgoingNumber,direction,callStatus,calldate,billsec,"http://195.2.84.33/rec/monitor/" + recordPath + recordFile)
+            telegram.sendInfoToTelegram(outgoingNumber,calledNumber,outgoingNumber,direction,callStatus,calldate,billsec,"http://185.69.154.243:8888/rec/monitor/" + recordPath + recordFile)
         } else {
             logger.debug(`Результат ${util.inspect(result)}`);
             logger.debug(`Не нашлась запись в базе по ID ${uniqueid}`);
@@ -91,25 +91,49 @@ const searchOutgoingCallInfoInCdr = (uniqueid) => {
 
 const searchIncomingFollowMeInCdr = (uniqueid,followMeNumber) => {
     db.query('select calldate,src,dstchannel,did,disposition,billsec,recordingfile from cdr where disposition like "ANSWERED" and  uniqueid like  "' + uniqueid + '" ORDER BY billsec', (err, result, fields) => {
-        logger.info(result)
+        logger.info(result);
         if (err) logger.error(err);
         if (result.length != 0) {
-                let calldate = moment(result[0].calldate).format("YYYY/MM/DD HH:mm:ss"),
-                    incomingNumber = result[0].src;
-                    recordPath = moment().format("YYYY/MM/DD/");
-                    recordFile = result[0].recordingfile;
-                    billsec = result[0].billsec;
-                    dstchannel = followMeNumber;
-                    did = appConfig.sipTrunkNumber[result[0].did];
-                    direction = "Incoming";
-                    callStatus = appConfig.crmIncomingStatus[result[0].disposition];
-                telegram.sendInfoToTelegram(incomingNumber,did,dstchannel,direction,callStatus,calldate,billsec,"http://195.2.84.33/rec/monitor/" + recordPath + recordFile)
+                let calldate = moment(result[0].calldate).format("YYYY/MM/DD HH:mm:ss");
+                let incomingNumber = result[0].src;
+                let recordPath = moment().format("YYYY/MM/DD/");
+                let recordFile = result[0].recordingfile;
+                let billsec = result[0].billsec;
+                let dstchannel = followMeNumber;
+                let did = appConfig.sipTrunkNumber[result[0].did];
+                let direction = "Incoming";
+                let callStatus = appConfig.crmIncomingStatus[result[0].disposition];
+                telegram.sendInfoToTelegram(incomingNumber,did,dstchannel,direction,callStatus,calldate,billsec,"http://185.69.154.243:8888/rec/monitor/" + recordPath + recordFile)
+        } else {
+            //logger.debug(`Результат ${util.inspect(result)}`);
+            //logger.debug(`Не нашлась запись в базе по ID ${uniqueid}`);
+	       searchNotAnswerFollowMeInCdr(uniqueid,followMeNumber);
+        }
+    });
+}
+
+const searchNotAnswerFollowMeInCdr = (uniqueid,followMeNumber) => {
+    db.query('select calldate,src,dstchannel,did,disposition,billsec,recordingfile from cdr where uniqueid like  "' + uniqueid + '" ORDER BY billsec', (err, result, fields) => {
+        logger.info(result);
+        if (err) logger.error(err);
+        if (result.length != 0) {
+                let calldate = moment(result[0].calldate).format("YYYY/MM/DD HH:mm:ss");
+                let incomingNumber = result[0].src;
+                let recordPath = moment().format("YYYY/MM/DD/");
+                let recordFile = result[0].recordingfile;
+                let billsec = result[0].billsec;
+                let dstchannel = followMeNumber;
+                let did = appConfig.sipTrunkNumber[result[0].did];
+                let direction = "Incoming";
+                let callStatus = appConfig.crmIncomingStatus[result[0].disposition];
+                telegram.sendInfoToTelegram(incomingNumber,did,dstchannel,direction,callStatus,calldate,billsec,"http://185.69.154.243:8888/rec/monitor/" + recordPath + recordFile)
         } else {
             logger.debug(`Результат ${util.inspect(result)}`);
             logger.debug(`Не нашлась запись в базе по ID ${uniqueid}`);
         }
     });
 }
+
 
 nami.on(`namiEventVarSet`, (event) => {
 //logger.info(event);
@@ -119,7 +143,7 @@ nami.on(`namiEventVarSet`, (event) => {
         event.context == `app-vmblast` &&
         event.variable == 'VM_MESSAGEFILE'
     ) {
-        logger.debug(`Получили Voicemail ${event.uniqueid}, производим поиск`);
+        logger.debug(`Получили Voicemail ${event}, производим поиск`);
         checkVoicemail = false;
         setTimeout(funcCheckVoicemail, 1000);
         setTimeout(searchVoicemail, 10000, event.uniqueid,event.value);
@@ -134,7 +158,7 @@ nami.on(`namiEventNewexten`, (event) => {
         event.context == 'macro-hangupcall' &&
         event.application == 'Hangup'
     ) {
-        logger.debug(`Завершился входящий вызов ${event.uniqueid}, производим поиск`);
+        logger.debug(`Завершился входящий вызов ${event}, производим поиск`);
         checkCDR = false;
         setTimeout(funcCDR, 1000);
         setTimeout(searchIncomingCallInfoInCdr, 10000, event.uniqueid);
@@ -145,7 +169,7 @@ nami.on(`namiEventNewexten`, (event) => {
         event.context == 'macro-hangupcall' &&
         event.application == 'Hangup'
     ) {
-        logger.debug(`Завершился исходящий вызов ${event.uniqueid}, производим поиск`);
+        logger.debug(`Завершился исходящий вызов ${event}, производим поиск`);
         checkCDR = false;
         setTimeout(funcCDR, 1000);
         setTimeout(searchOutgoingCallInfoInCdr, 10000, event.uniqueid);
@@ -156,7 +180,7 @@ nami.on(`namiEventNewexten`, (event) => {
         event.context == 'macro-hangupcall' &&
         event.application == 'Hangup'
     ) {
-       	logger.debug(`Завершился входящий вызов с переадресацией ${event.uniqueid}, производим поиск`);
+       	logger.debug(`Завершился входящий вызов с переадресацией ${event}, производим поиск`);
         checkCDR = false;
         let followMeNumber = event.connectedlinenum
         setTimeout(funcCDR, 1000);
