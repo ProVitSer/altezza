@@ -1,157 +1,80 @@
 "use strict";
 const moment = require('moment'),
     nami = require(`./models/ami`),
-    db = require(`./models/db`),
     logger = require(`./logger/logger`),
     appConfig = require(`./config/config`),
-    Telegram = require('./telegram');
+    Axios = require('./src/axios'),
+    db = require('./src/db');
 
-const telegram = new Telegram;
+const axios = new Axios;
 let checkVoicemail = true;
 let checkCDR = true;
 
 
-const funcCheckVoicemail = () => {
+const funCheckVoicemail = () => {
     checkVoicemail = true;
 };
 
-const funcCDR = () => {
+const funCheckCDR = () => {
     checkCDR = true;
 };
 
-const replaceChannel = (channel) => {
-    return channel.replace(/(PJSIP\/)(.*)-(.*)/, `$2`);
-};
 
-const searchVoicemail = (uniqueid,voicemailURL) => {
-    db.query('select did,src,calldate,channel,billsec from cdr where uniqueid like "' + uniqueid + '" and lastapp like "VoiceMail"', (err, result, fields) => {
-        if (err) logger.error(err);
-	logger.info(result)
-        if (result.length != 0) {
-                let calldate = moment(result[0].calldate).format("YYYY/MM/DD HH:mm:ss");
-                let incomingNumber = result[0].src;
-                let recordPath = voicemailURL.replace(/\/var\/spool\/asterisk/g, "http://195.2.84.33/voicemail");
-                let billsec = result[0].billsec;
-               	let channel = replaceChannel(result[0].channel);
-                let did = appConfig.sipTrunkNumber[result[0].did];
-		let direction = "Incoming";
-		let callStatus = "Voicemail";
-                telegram.sendInfoToTelegram(incomingNumber,did,channel,direction,callStatus,calldate,billsec,recordPath + '.wav')
-                //telegram.sendInfoToTelegram(incomingNumber,did,calldate,recordPath + '.wav')
-        } else {
-            logger.debug(`Результат ${util.inspect(result)}`);
-            logger.debug(`Не нашлась запись в базе по ID ${uniqueid}`);
-        }
-    });
+function timeout(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-const searchIncomingCallInfoInCdr = (uniqueid) => {
-    db.query('select calldate,src,dstchannel,did,disposition,billsec,recordingfile from cdr where uniqueid like  "' + uniqueid + '" ORDER BY billsec', (err, result, fields) => {
-	logger.info(result)
-        if (err) logger.error(err);
-        if (result.length != 0) {
-                let calldate = moment(result[0].calldate).format("YYYY/MM/DD HH:mm:ss");
-                let incomingNumber = result[0].src;
-                let recordPath = moment().format("YYYY/MM/DD/");
-                let recordFile = result[0].recordingfile;
-	        let billsec = result[0].billsec;
-		let dstchannel = replaceChannel(result[0].dstchannel);
-                let did = appConfig.sipTrunkNumber[result[0].did];
-                let direction = "Incoming";
-                let callStatus = appConfig.crmIncomingStatus[result[0].disposition];
-                telegram.sendInfoToTelegram(incomingNumber,did,dstchannel,direction,callStatus,calldate,billsec,"http://185.69.154.243:8888/rec/monitor/" + recordPath + recordFile)
-        } else {
-            logger.debug(`Результат ${util.inspect(result)}`);
-            logger.debug(`Не нашлась запись в базе по ID ${uniqueid}`);
-        }
-    });
+async function sleep(fn, time, ...args) {
+    await timeout(time);
+    return fn(...args);
 }
 
-const searchOutgoingCallInfoInCdr = (uniqueid) => {
-    db.query('select calldate,src,dst,disposition,billsec,recordingfile  from cdr where uniqueid like  "' + uniqueid + '" and dcontext like "from-internal"', (err, result, fields) => {
-        if (err) logger.error(err);
-        logger.info(result)
-        if (result[0]) {
-            let calldate = moment(result[0].calldate).format("YYYY/MM/DD HH:mm:ss");
-            let outgoingNumber = result[0].src;
-            let recordPath = moment().format("YYYY/MM/DD/");
-            let recordFile = result[0].recordingfile
-	    let billsec = result[0].billsec;
-            let calledNumber = result[0].dst;
-            let direction = "Outgoing";
-            let callStatus = appConfig.crmIncomingStatus[result[0].disposition];
-            telegram.sendInfoToTelegram(outgoingNumber,calledNumber,outgoingNumber,direction,callStatus,calldate,billsec,"http://185.69.154.243:8888/rec/monitor/" + recordPath + recordFile)
+//Производим поиск в БД информации по входящему вызову в зависимости от результата завершения(Успешный выходящий,голосовая почта,переадресация по правилам followme)
+async function incomingCall(type, ...args) {
+    try {
+        let result;
+        if (type == 'incoming') {
+            result = await sleep(db.searchIncomingCallInfoInCdr, 10000, args[0]);
+        } else if (type == 'followme') {
+            result = await sleep(db.searchIncomingFollowMeInCdr, 10000, args[0], args[1]);
         } else {
-            logger.debug(`Результат ${util.inspect(result)}`);
-            logger.debug(`Не нашлась запись в базе по ID ${uniqueid}`);
+            result = await sleep(db.searchVoicemail, 10000, args[0], args[1]);
         }
-    });
+        const { incomingNumber, did, dstchannel, direction, callStatus, calldate, billsec, recordURL } = result;
+        await axios.sendInfoToTelegram(incomingNumber, did, dstchannel, direction, callStatus, calldate, billsec, recordURL);
+        return '';
+    } catch (e) {
+        logger.error(e);
+    }
 }
 
-
-const searchIncomingFollowMeInCdr = (uniqueid,followMeNumber) => {
-    db.query('select calldate,src,dstchannel,did,disposition,billsec,recordingfile from cdr where disposition like "ANSWERED" and  uniqueid like  "' + uniqueid + '" ORDER BY billsec', (err, result, fields) => {
-        logger.info(result);
-        if (err) logger.error(err);
-        if (result.length != 0) {
-                let calldate = moment(result[0].calldate).format("YYYY/MM/DD HH:mm:ss");
-                let incomingNumber = result[0].src;
-                let recordPath = moment().format("YYYY/MM/DD/");
-                let recordFile = result[0].recordingfile;
-                let billsec = result[0].billsec;
-                let dstchannel = followMeNumber;
-                let did = appConfig.sipTrunkNumber[result[0].did];
-                let direction = "Incoming";
-                let callStatus = appConfig.crmIncomingStatus[result[0].disposition];
-                telegram.sendInfoToTelegram(incomingNumber,did,dstchannel,direction,callStatus,calldate,billsec,"http://185.69.154.243:8888/rec/monitor/" + recordPath + recordFile)
-        } else {
-            //logger.debug(`Результат ${util.inspect(result)}`);
-            //logger.debug(`Не нашлась запись в базе по ID ${uniqueid}`);
-	       searchNotAnswerFollowMeInCdr(uniqueid,followMeNumber);
-        }
-    });
+//Производим поиск в БД информации по исходящему вызову и отправляем на сервер для отправки в Telegram
+async function outgoingCall(uniqueid) {
+    try {
+        const { outgoingNumber, calledNumber, direction, callStatus, calldate, billsec, recordURL } = await sleep(db.searchOutgoingCallInfoInCdr, 10000, uniqueid);
+        axios.sendInfoToTelegram(outgoingNumber, calledNumber, outgoingNumber, direction, callStatus, calldate, billsec, recordURL);
+    } catch (e) {
+        logger.error(e);
+    }
 }
 
-const searchNotAnswerFollowMeInCdr = (uniqueid,followMeNumber) => {
-    db.query('select calldate,src,dstchannel,did,disposition,billsec,recordingfile from cdr where uniqueid like  "' + uniqueid + '" ORDER BY billsec', (err, result, fields) => {
-        logger.info(result);
-        if (err) logger.error(err);
-        if (result.length != 0) {
-                let calldate = moment(result[0].calldate).format("YYYY/MM/DD HH:mm:ss");
-                let incomingNumber = result[0].src;
-                let recordPath = moment().format("YYYY/MM/DD/");
-                let recordFile = result[0].recordingfile;
-                let billsec = result[0].billsec;
-                let dstchannel = followMeNumber;
-                let did = appConfig.sipTrunkNumber[result[0].did];
-                let direction = "Incoming";
-                let callStatus = appConfig.crmIncomingStatus[result[0].disposition];
-                telegram.sendInfoToTelegram(incomingNumber,did,dstchannel,direction,callStatus,calldate,billsec,"http://185.69.154.243:8888/rec/monitor/" + recordPath + recordFile)
-        } else {
-            logger.debug(`Результат ${util.inspect(result)}`);
-            logger.debug(`Не нашлась запись в базе по ID ${uniqueid}`);
-        }
-    });
-}
-
-
+//Ловим событие получение голосовой почты
 nami.on(`namiEventVarSet`, (event) => {
-//logger.info(event);
     if (checkVoicemail &&
-	event.calleridnum &&
+        event.calleridnum &&
         event.calleridnum.toString().length > 4 &&
-        event.context == `app-vmblast` &&
-        event.variable == 'VM_MESSAGEFILE'
+        event.context == `app-vmblast` && //Контекст голосовой почты
+        event.variable == 'VM_MESSAGEFILE' //Значение, что оставили голосовое сообщение
     ) {
         logger.debug(`Получили Voicemail ${event}, производим поиск`);
-        checkVoicemail = false;
-        setTimeout(funcCheckVoicemail, 1000);
-        setTimeout(searchVoicemail, 10000, event.uniqueid,event.value);
+        checkVoicemail = false; //По событию приходит 2 одинаковых event, чекаем
+        setTimeout(funCheckVoicemail, 1000);
+        incomingCall('voicemail', event.uniqueid, event.value);
     }
 })
 
+//Ловим события по входящему,исходящему вызову и переадресациям
 nami.on(`namiEventNewexten`, (event) => {
-//logger.info(event);
     if (checkCDR && event.calleridnum.toString().length > 4 &&
         event.uniqueid == event.linkedid &&
         event.connectedlinenum.toString().length < 4 &&
@@ -160,8 +83,8 @@ nami.on(`namiEventNewexten`, (event) => {
     ) {
         logger.debug(`Завершился входящий вызов ${event}, производим поиск`);
         checkCDR = false;
-        setTimeout(funcCDR, 1000);
-        setTimeout(searchIncomingCallInfoInCdr, 10000, event.uniqueid);
+        setTimeout(funCheckCDR, 1000);
+        incomingCall('incoming', event.uniqueid);
     }
     if (checkCDR && event.calleridnum.toString().length < 4 &&
         event.connectedlinenum.toString().length > 10 &&
@@ -171,8 +94,8 @@ nami.on(`namiEventNewexten`, (event) => {
     ) {
         logger.debug(`Завершился исходящий вызов ${event}, производим поиск`);
         checkCDR = false;
-        setTimeout(funcCDR, 1000);
-        setTimeout(searchOutgoingCallInfoInCdr, 10000, event.uniqueid);
+        setTimeout(funCheckCDR, 1000);
+        outgoingCall(event.uniqueid);
     }
     if (checkCDR && event.calleridnum.toString().length > 4 &&
         event.uniqueid == event.linkedid &&
@@ -180,18 +103,17 @@ nami.on(`namiEventNewexten`, (event) => {
         event.context == 'macro-hangupcall' &&
         event.application == 'Hangup'
     ) {
-       	logger.debug(`Завершился входящий вызов с переадресацией ${event}, производим поиск`);
+        logger.debug(`Завершился входящий вызов с переадресацией ${event}, производим поиск`);
         checkCDR = false;
-        let followMeNumber = event.connectedlinenum
-        setTimeout(funcCDR, 1000);
-        setTimeout(searchIncomingFollowMeInCdr, 10000, event.uniqueid,followMeNumber);
+        setTimeout(funCheckCDR, 1000);
+        incomingCall('followme', event.uniqueid, event.connectedlinenum);
     }
 });
 
 
-
+//Включить для вывода всех Event Asterisk
+/*
 nami.on(`namiEvent`, (event) => {
-   // console.log(event);
+    logger.info(event);
 });
-
-
+*/
